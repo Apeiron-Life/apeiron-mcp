@@ -1,0 +1,81 @@
+# Docker Compose for apeiron-mcp.
+#
+#   cp .env.example .env      # then edit APEIRON_ACCESS_TOKEN
+#   docker compose up -d --build
+#   curl -i http://localhost:8000/mcp
+#
+# The default service speaks MCP "streamable-http" so it can be reached over the
+# network. For a local stdio MCP client (Claude Desktop, VS Code, ...) use the
+# opt-in profile:
+#
+#   docker compose --profile stdio run --rm apeiron-mcp-stdio
+#
+# Requires Docker Compose >= 2.24 (for `env_file.required`).
+
+name: apeiron-mcp
+
+services:
+  # ------------------------------------------------------------------------- #
+  # Long-running HTTP service (default).
+  # ------------------------------------------------------------------------- #
+  apeiron-mcp:
+    image: apeiron-mcp:0.1.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: apeiron-mcp
+    init: true
+    restart: unless-stopped
+    ports:
+      # host:container — the container side is pinned to MCP_PORT below.
+      - "${MCP_HOST_PORT:-8000}:8000"
+    # Optional extras from a local .env (never committed). Values under
+    # `environment:` win over anything in this file.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MCP_TRANSPORT: ${MCP_TRANSPORT:-streamable-http}
+      MCP_HOST: ${MCP_HOST:-0.0.0.0}
+      MCP_PORT: "8000"
+      MCP_STATELESS_HTTP: ${MCP_STATELESS_HTTP:-false}
+      MCP_JSON_RESPONSE: ${MCP_JSON_RESPONSE:-false}
+      APEIRON_BASE_URL: ${APEIRON_BASE_URL:-https://api.apeiron.life}
+      APEIRON_ACCESS_TOKEN: ${APEIRON_ACCESS_TOKEN:-}
+      APEIRON_TIMEOUT: ${APEIRON_TIMEOUT:-30}
+      # Uncomment to enable Host/Origin validation when exposed publicly.
+      # MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-}
+      # MCP_ALLOWED_ORIGINS: ${MCP_ALLOWED_ORIGINS:-}
+    # The server is stateless apart from HTTP session state: keep the runtime
+    # filesystem read-only and drop every capability (it binds port 8000).
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  # ------------------------------------------------------------------------- #
+  # stdio service — only started explicitly via the "stdio" profile.
+  # Keeps stdout as a clean JSON-RPC pipe (logs go to stderr).
+  # ------------------------------------------------------------------------- #
+  apeiron-mcp-stdio:
+    profiles: ["stdio"]
+    image: apeiron-mcp:0.1.0
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    container_name: apeiron-mcp-stdio
+    stdin_open: true
+    tty: false
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      MCP_TRANSPORT: stdio
+      APEIRON_BASE_URL: ${APEIRON_BASE_URL:-https://api.apeiron.life}
+      APEIRON_ACCESS_TOKEN: ${APEIRON_ACCESS_TOKEN:-}
+      APEIRON_TIMEOUT: ${APEIRON_TIMEOUT:-30}

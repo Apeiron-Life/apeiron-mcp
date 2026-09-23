@@ -1,0 +1,30 @@
+# --- Version control / local tooling ---------------------------------------
+.git
+.gitignore
+.github
+.vscode
+.idea
+
+# --- Python environments & caches ------------------------------------------
+.venv
+venv
+env
+__pycache__
+*.py[cod]
+*.egg-info
+dist
+build
+.mypy_cache
+.ruff_cache
+.pytest_cache
+
+# --- Local secrets (never bake credentials into the image) ------------------
+.env
+.env.*
+!.env.example
+
+# --- Docs & local-only extras ----------------------------------------------
+examples
+docker-compose*.yml
+Dockerfile*
+.dockerignore
