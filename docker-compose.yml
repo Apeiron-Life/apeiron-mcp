@@ -43,6 +43,8 @@ services:
       MCP_JSON_RESPONSE: ${MCP_JSON_RESPONSE:-false}
       APEIRON_BASE_URL: ${APEIRON_BASE_URL:-https://api.apeiron.life}
       APEIRON_ACCESS_TOKEN: ${APEIRON_ACCESS_TOKEN:-}
+      APEIRON_EMAIL: ${APEIRON_EMAIL:-}
+      APEIRON_PASSWORD: ${APEIRON_PASSWORD:-}
       APEIRON_TIMEOUT: ${APEIRON_TIMEOUT:-30}
       # Uncomment to enable Host/Origin validation when exposed publicly.
       # MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-}
@@ -78,4 +80,6 @@ services:
       MCP_TRANSPORT: stdio
       APEIRON_BASE_URL: ${APEIRON_BASE_URL:-https://api.apeiron.life}
       APEIRON_ACCESS_TOKEN: ${APEIRON_ACCESS_TOKEN:-}
+      APEIRON_EMAIL: ${APEIRON_EMAIL:-}
+      APEIRON_PASSWORD: ${APEIRON_PASSWORD:-}
       APEIRON_TIMEOUT: ${APEIRON_TIMEOUT:-30}
