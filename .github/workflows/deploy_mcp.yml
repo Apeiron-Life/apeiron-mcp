@@ -1,0 +1,108 @@
+name: Deploy MCP
+
+# Deploys a previously built apeiron-mcp image from AWS ECR to the staging or
+# production EC2 host. Mirrors the apeiron-ml `Deploy backend` workflow: it SSHes
+# into the target box, logs into ECR, replaces the running container and starts
+# the requested tag.
+#
+# Required repository secrets (shared with apeiron-ml):
+#   AWS_ECR_URL
+#   STAGING_SSH_PRIVATE_KEY / PRODUCTION_SSH_PRIVATE_KEY
+#   STAGING_SERVER_HOSTNAME / PRODUCTION_SERVER_HOSTNAME
+#
+# The target host must provide `~/.env.docker` with the runtime configuration
+# (APEIRON_* credentials plus any MCP_* overrides — see the README
+# `Configuration` section) before the container starts.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Which image tag to deploy?'
+        required: true
+        default: 'latest'
+      environment:
+        type: choice
+        description: 'Target environment (staging or production)'
+        required: true
+        default: 'staging'
+        options:
+          - staging
+          - production
+      host_port:
+        description: 'Host port to publish the MCP HTTP service on (container listens on 8000)'
+        required: true
+        default: '8001'
+
+env:
+  # ECR repository, relative to the registry in secrets.AWS_ECR_URL.
+  ECR_REPOSITORY: phs/apeiron-mcp
+  AWS_REGION: us-west-2
+  CONTAINER_NAME: apeiron-mcp
+  APP_PORT: '8000'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ github.event.inputs.environment == 'production' && secrets.PRODUCTION_SSH_PRIVATE_KEY || secrets.STAGING_SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ github.event.inputs.environment == 'production' && secrets.PRODUCTION_SERVER_HOSTNAME || secrets.STAGING_SERVER_HOSTNAME }} >> ~/.ssh/known_hosts
+
+      - name: Execute remote commands
+        run: |
+          ssh -o ServerAliveInterval=60 -o ServerAliveCountMax=10 ec2-user@${{ github.event.inputs.environment == 'production' && secrets.PRODUCTION_SERVER_HOSTNAME || secrets.STAGING_SERVER_HOSTNAME }} << 'EOF'
+          # AWS credentials for the ECR login live in the host's shell profile.
+          source /home/ec2-user/.bashrc_ml
+          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ECR_URL }}
+
+          # Clean up the existing container first to free up disk space.
+          docker stop ${{ env.CONTAINER_NAME }} || true
+          docker rm ${{ env.CONTAINER_NAME }} || true
+
+          # Pull new image after cleanup.
+          (
+            docker pull --quiet ${{ secrets.AWS_ECR_URL }}/${{ env.ECR_REPOSITORY }}:${{ github.event.inputs.tag }} &
+            PULL_PID=$!
+            while kill -0 $PULL_PID 2>/dev/null; do
+              echo "Docker pull in progress... ($(date))"
+              sleep 10
+            done
+            wait $PULL_PID
+          )
+
+          # Run new container. The service is stateless, so the runtime
+          # filesystem is read-only and every capability is dropped.
+          docker run -d --name ${{ env.CONTAINER_NAME }} \
+            -p ${{ github.event.inputs.host_port }}:${{ env.APP_PORT }} \
+            --env-file .env.docker \
+            --restart unless-stopped \
+            --read-only \
+            --tmpfs /tmp \
+            --security-opt no-new-privileges:true \
+            --cap-drop ALL \
+            ${{ secrets.AWS_ECR_URL }}/${{ env.ECR_REPOSITORY }}:${{ github.event.inputs.tag }}
+
+          # Remove dangling layers left over from the previous image.
+          docker image prune -f
+
+          # Fail the deploy early if the container exited during startup.
+          sleep 5
+          if ! docker ps --filter "name=^/${{ env.CONTAINER_NAME }}$" --format '{{.Status}}' | grep -q '^Up'; then
+            echo "::error::${{ env.CONTAINER_NAME }} failed to start; last logs:"
+            docker logs --tail 50 ${{ env.CONTAINER_NAME }} || true
+            exit 1
+          fi
+
+          echo "${{ env.CONTAINER_NAME }} is up on host port ${{ github.event.inputs.host_port }} (image tag: ${{ github.event.inputs.tag }})"
+          EOF
