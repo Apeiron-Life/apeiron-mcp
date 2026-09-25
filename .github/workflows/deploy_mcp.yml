@@ -5,6 +5,9 @@ name: Deploy MCP
 # into the target box, logs into ECR, replaces the running container and starts
 # the requested tag.
 #
+# The MCP service is published on host port 8001 (`HOST_PORT` below) because
+# apeiron-ml's `research-api` already binds 8000 on the same EC2 instances.
+#
 # Required repository secrets (shared with apeiron-ml):
 #   AWS_ECR_URL
 #   STAGING_SSH_PRIVATE_KEY / PRODUCTION_SSH_PRIVATE_KEY
@@ -29,17 +32,17 @@ on:
         options:
           - staging
           - production
-      host_port:
-        description: 'Host port to publish the MCP HTTP service on (container listens on 8000)'
-        required: true
-        default: '8001'
 
 env:
   # ECR repository, relative to the registry in secrets.AWS_ECR_URL.
   ECR_REPOSITORY: phs/apeiron-mcp
   AWS_REGION: us-west-2
   CONTAINER_NAME: apeiron-mcp
+  # Port the container listens on (matches Dockerfile ENV MCP_PORT).
   APP_PORT: '8000'
+  # Host port to publish on. 8000 is taken by apeiron-ml's research-api, so MCP
+  # uses 8001 to avoid a bind collision on the shared EC2 instance.
+  HOST_PORT: '8001'
 
 jobs:
   deploy:
@@ -84,7 +87,7 @@ jobs:
           # Run new container. The service is stateless, so the runtime
           # filesystem is read-only and every capability is dropped.
           docker run -d --name ${{ env.CONTAINER_NAME }} \
-            -p ${{ github.event.inputs.host_port }}:${{ env.APP_PORT }} \
+            -p ${{ env.HOST_PORT }}:${{ env.APP_PORT }} \
             --env-file .env.docker \
             --restart unless-stopped \
             --read-only \
@@ -104,5 +107,5 @@ jobs:
             exit 1
           fi
 
-          echo "${{ env.CONTAINER_NAME }} is up on host port ${{ github.event.inputs.host_port }} (image tag: ${{ github.event.inputs.tag }})"
+          echo "${{ env.CONTAINER_NAME }} is up on host port ${{ env.HOST_PORT }} (image tag: ${{ github.event.inputs.tag }})"
           EOF

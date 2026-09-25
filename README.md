@@ -94,17 +94,18 @@ docker build -t apeiron-mcp:0.1.0 .
 ### Run as an HTTP service (recommended for deployment)
 
 ```bash
+# 8000 is taken by apeiron-ml's research-api on the shared EC2 -> publish on 8001.
 docker run -d --name apeiron-mcp \
-  -p 8000:8000 \
+  -p 8001:8000 \
   -e APEIRON_ACCESS_TOKEN="$APEIRON_ACCESS_TOKEN" \
   --restart unless-stopped \
   apeiron-mcp:0.1.0
 ```
 
-The endpoint is then `http://localhost:8000/mcp`. Verify it:
+The endpoint is then `http://localhost:8001/mcp`. Verify it:
 
 ```bash
-curl -i -X POST http://localhost:8000/mcp \
+curl -i -X POST http://localhost:8001/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}'
@@ -154,7 +155,9 @@ docker compose --profile stdio run --rm apeiron-mcp-stdio
 The container runs as a non-root user (uid/gid 10001) with a read-only
 root filesystem, all Linux capabilities dropped and a built-in `HEALTHCHECK`
 (TCP probe on the configured port). Host port mapping is controlled by
-`MCP_HOST_PORT` (host side) and `MCP_PORT` (container side, default `8000`).
+`MCP_HOST_PORT` (host side, default `8001`) and `MCP_PORT` (container side,
+default `8000`). MCP publishes on `8001` because apeiron-ml's `research-api`
+already binds `8000` on the shared EC2 instance.
 
 ### Configuration
 
@@ -183,7 +186,7 @@ Server behaviour:
 | `MCP_JSON_RESPONSE` | `false` | Reply with plain JSON instead of SSE streams. |
 | `MCP_ALLOWED_HOSTS` | *(unset)* | Comma-separated `Host` allowlist, matched against the full `Host` header **including the port**; setting it enables DNS-rebinding protection (other hosts get `421`). Use `name:*` for any port. |
 | `MCP_ALLOWED_ORIGINS` | *(unset)* | Comma-separated `Origin` allowlist. |
-| `MCP_HOST_PORT` | `8000` | **Compose only** — host port published by `docker-compose.yml` (maps to container `MCP_PORT`). |
+| `MCP_HOST_PORT` | `8001` | **Compose only** — host port published by `docker-compose.yml` (maps to container `MCP_PORT`). Defaults to `8001` because `8000` is taken by `research-api` on the shared EC2. |
 
 > **Security note:** binding to a non-loopback address (`0.0.0.0`, required in a
 > container) disables the SDK's `Host`/`Origin` validation so the service is
@@ -193,6 +196,63 @@ Server behaviour:
 > are matched against the `Host` header including its port) and terminate TLS at
 > a reverse proxy. The server itself ships no authentication layer, so do not
 > publish the port directly to the internet.
+
+## CI/CD
+
+Two GitHub Actions workflows mirror the apeiron-ml pipeline: they build the image
+in CI, push it to AWS ECR, and deploy a chosen tag to the staging/production host.
+
+| Workflow | Trigger | What it does |
+|----------|---------|--------------|
+| [`build_mcp.yml`](.github/workflows/build_mcp.yml) | push to any branch (or manual) | Builds `./Dockerfile` (target `runtime`) and pushes `phs/apeiron-mcp:<tag>` + `:latest` to ECR. |
+| [`deploy_mcp.yml`](.github/workflows/deploy_mcp.yml) | manual (`workflow_dispatch`) | Pulls the requested tag onto the target host and (re)starts the `apeiron-mcp` container. |
+
+### Image tags
+
+| Source branch | Image tag | Git tag |
+|---------------|-----------|---------|
+| `feature/APLF-664_…` | `APLF-664` | — |
+| `main` | next semantic version, e.g. `0.1.0` | `v0.1.0` (pushed back by CI) |
+| `staging` | `stag-<version>`, e.g. `stag-0.1.0` | — |
+
+Every build also updates `latest`.
+
+### Required repository secrets
+
+| Secret | Used by | Purpose |
+|--------|---------|---------|
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | build | AWS credentials for the ECR login. |
+| `AWS_ECR_URL` | build, deploy | Registry host, e.g. `<account-id>.dkr.ecr.us-west-2.amazonaws.com`. |
+| `STAGING_SSH_PRIVATE_KEY` / `PRODUCTION_SSH_PRIVATE_KEY` | deploy | SSH key for the target host. |
+| `STAGING_SERVER_HOSTNAME` / `PRODUCTION_SERVER_HOSTNAME` | deploy | EC2 hostname to deploy to. |
+
+### Deploying
+
+1. Provide a `.env.docker` in the home directory of the target host (the
+   workflow runs `docker run --env-file .env.docker`). Start from the committed
+   template and fill in the real values:
+
+   ```bash
+   cp .env.example ~/.env.docker   # then edit APEIRON_ACCESS_TOKEN etc.
+   ```
+
+   See [Configuration](#configuration) for every variable.
+2. Run the **Deploy MCP** workflow and pick the image tag and the environment.
+   MCP is published on host port `8001` and the container always listens on
+   `8000`; `8000` is left alone because apeiron-ml's `research-api` uses it.
+3. The workflow restarts the container and fails loudly (with the last 50 log
+   lines) if it exits during startup.
+
+The `ECR_REPOSITORY` (`phs/apeiron-mcp`), `AWS_REGION` (`us-west-2`),
+`CONTAINER_NAME` (`apeiron-mcp`) and `HOST_PORT` (`8001`) values live in the
+`env:` block at the top of each workflow, so a different registry, region,
+container name or host port is a one-line change.
+
+> **Exposing the service:** the apeiron-ml EC2 security group only opens ports
+> `8000` and `22`, so `8001` is reachable on the host/VPC but **not** from the
+> internet until an ingress rule for `8001` is added to the terraform security
+> group (`apeiron-ml/terraform_utils/research{,_staging}_env/ec2.tf`). In the
+> meantime reach it over an SSH/SSM tunnel or front it with a reverse proxy.
 
 ## Authentication
 
@@ -278,6 +338,23 @@ doubles as a wiring check: without credentials everything reports
 that the MCP stdio client only forwards a safe subset of the environment
 (`HOME`, `PATH`, …), which is why the examples pass the `APEIRON_*` variables to
 the server process explicitly.
+
+### LLM agent chat UI
+
+`examples/agent_demo.py` puts a small browser chat UI in front of the server: an
+LLM picks the MCP tools, every tool call is shown above the answer, and the reply
+streams in as it is written. Start the server over streamable HTTP, set one LLM
+key, then open <http://127.0.0.1:8080>:
+
+```bash
+MCP_TRANSPORT=streamable-http apeiron-mcp   # terminal 1
+.venv/bin/pip install anthropic openai
+OPENAI_API_KEY=... .venv/bin/python examples/agent_demo.py   # terminal 2 (or ANTHROPIC_API_KEY)
+```
+
+Failures (a bad API key, the server not running) are reported inline in the page
+instead of as a stack trace. `MCP_URL` overrides the MCP endpoint and
+`AGENT_HOST` / `AGENT_PORT` the UI bind address.
 
 API failures (bad token, unknown `person_id`, transport error) surface as MCP
 tool errors carrying the failing method, path and HTTP status.

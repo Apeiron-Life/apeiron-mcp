@@ -2,7 +2,7 @@
 #
 #   cp .env.example .env      # then edit APEIRON_ACCESS_TOKEN
 #   docker compose up -d --build
-#   curl -i http://localhost:8000/mcp
+#   curl -i http://localhost:8001/mcp
 #
 # The default service speaks MCP "streamable-http" so it can be reached over the
 # network. For a local stdio MCP client (Claude Desktop, VS Code, ...) use the
@@ -29,7 +29,9 @@ services:
     restart: unless-stopped
     ports:
       # host:container — the container side is pinned to MCP_PORT below.
-      - "${MCP_HOST_PORT:-8000}:8000"
+      # Host 8000 is taken by apeiron-ml's research-api on the shared EC2, so
+      # MCP publishes on 8001 by default (override with MCP_HOST_PORT).
+      - "${MCP_HOST_PORT:-8001}:8000"
     # Optional extras from a local .env (never committed). Values under
     # `environment:` win over anything in this file.
     env_file:
