@@ -42,7 +42,7 @@ All tools return the envelope:
   "source": "apeiron-api",
   "notes": ["..."]
 }
-```
+``` 
 
 * `source` is `"apeiron-api"` for live data and `"stub"` when no credentials are
   configured.
