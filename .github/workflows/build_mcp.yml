@@ -45,7 +45,7 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region: us-west-2
 
       - name: Fetch all tags
         run: git fetch --tags
@@ -89,17 +89,17 @@ jobs:
 
       - name: Authenticate with AWS ECR
         run: |
-          aws ecr get-login-password --region ${{ env.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ECR_URL }}
+          aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin ${{ secrets.AWS_ECR_URL }}
 
       - name: Build Docker Image
         run: |
-          docker build -t ${{ secrets.AWS_ECR_URL }}/${{ env.ECR_REPOSITORY }}:${{ env.tag }} --target runtime .
-          docker tag ${{ secrets.AWS_ECR_URL }}/${{ env.ECR_REPOSITORY }}:${{ env.tag }} ${{ secrets.AWS_ECR_URL }}/${{ env.ECR_REPOSITORY }}:latest
+          docker build -t ${{ secrets.AWS_ECR_URL }}/phs/apeiron-mcp:${{ env.tag }} --target runtime .
+          docker tag ${{ secrets.AWS_ECR_URL }}/phs/apeiron-mcp:${{ env.tag }} ${{ secrets.AWS_ECR_URL }}/phs/apeiron-mcp:latest
 
       - name: Push Docker Image to AWS ECR
         run: |
-          docker push ${{ secrets.AWS_ECR_URL }}/${{ env.ECR_REPOSITORY }}:${{ env.tag }}
-          docker push ${{ secrets.AWS_ECR_URL }}/${{ env.ECR_REPOSITORY }}:latest
+          docker push ${{ secrets.AWS_ECR_URL }}/phs/apeiron-mcp:${{ env.tag }}
+          docker push ${{ secrets.AWS_ECR_URL }}/phs/apeiron-mcp:latest
 
       - name: Push next semantic tag to GitHub (main only)
         if: github.ref == 'refs/heads/main' && success()
