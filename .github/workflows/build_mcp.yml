@@ -7,8 +7,11 @@ name: Build MCP image
 #   * `main`               -> image tag = next semantic version (e.g. 0.1.0)
 #   * `staging`            -> image tag = stag-<version>       (e.g. stag-0.1.0)
 #
-# Every build also pushes `latest`. On `main` the next semantic version is
-# pushed back to GitHub as a `v*` tag (e.g. v0.1.0).
+# On `main` the next semantic version is pushed back to GitHub as a `v*` tag
+# (e.g. v0.1.0).
+#
+# The ECR repository uses immutable tags, so only the versioned tag is pushed —
+# there is no mutable `latest`. Deploy pulls an explicit tag (see deploy_mcp.yml).
 #
 # Required repository secrets (shared with apeiron-ml):
 #   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ECR_URL
@@ -94,12 +97,10 @@ jobs:
       - name: Build Docker Image
         run: |
           docker build -t ${{ secrets.AWS_ECR_URL }}/phs/apeiron-mcp:${{ env.tag }} --target runtime .
-          docker tag ${{ secrets.AWS_ECR_URL }}/phs/apeiron-mcp:${{ env.tag }} ${{ secrets.AWS_ECR_URL }}/phs/apeiron-mcp:latest
 
       - name: Push Docker Image to AWS ECR
         run: |
           docker push ${{ secrets.AWS_ECR_URL }}/phs/apeiron-mcp:${{ env.tag }}
-          docker push ${{ secrets.AWS_ECR_URL }}/phs/apeiron-mcp:latest
 
       - name: Push next semantic tag to GitHub (main only)
         if: github.ref == 'refs/heads/main' && success()

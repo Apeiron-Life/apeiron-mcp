@@ -204,7 +204,7 @@ in CI, push it to AWS ECR, and deploy a chosen tag to the staging/production hos
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| [`build_mcp.yml`](.github/workflows/build_mcp.yml) | push to any branch (or manual) | Builds `./Dockerfile` (target `runtime`) and pushes `phs/apeiron-mcp:<tag>` + `:latest` to ECR. |
+| [`build_mcp.yml`](.github/workflows/build_mcp.yml) | push to any branch (or manual) | Builds `./Dockerfile` (target `runtime`) and pushes `phs/apeiron-mcp:<tag>` to ECR (immutable tags — no `latest`). |
 | [`deploy_mcp.yml`](.github/workflows/deploy_mcp.yml) | manual (`workflow_dispatch`) | Pulls the requested tag onto the target host and (re)starts the `apeiron-mcp` container. |
 
 ### Image tags
@@ -215,7 +215,8 @@ in CI, push it to AWS ECR, and deploy a chosen tag to the staging/production hos
 | `main` | next semantic version, e.g. `0.1.0` | `v0.1.0` (pushed back by CI) |
 | `staging` | `stag-<version>`, e.g. `stag-0.1.0` | — |
 
-Every build also updates `latest`.
+Tags are immutable, so each build pushes a fresh versioned tag rather than
+overwriting a moving `latest`. Deploy references an explicit tag.
 
 ### Required repository secrets
 

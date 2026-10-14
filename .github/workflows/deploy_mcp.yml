@@ -23,7 +23,7 @@ on:
       tag:
         description: 'Which image tag to deploy?'
         required: true
-        default: 'latest'
+        default: '0.0.2'
       environment:
         type: choice
         description: 'Target environment (staging or production)'
