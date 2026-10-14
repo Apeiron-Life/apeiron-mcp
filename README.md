@@ -211,12 +211,24 @@ in CI, push it to AWS ECR, and deploy a chosen tag to the staging/production hos
 
 | Source branch | Image tag | Git tag |
 |---------------|-----------|---------|
-| `feature/APLF-664_…` | `APLF-664` | — |
-| `main` | next semantic version, e.g. `0.1.0` | `v0.1.0` (pushed back by CI) |
-| `staging` | `stag-<version>`, e.g. `stag-0.1.0` | — |
+| `feature/APLF-664_…` | `<ticket>-<short sha>`, e.g. `APLF-664-1a2b3c4` | — |
+| `main` | next free semantic version, e.g. `0.1.0` | `v0.1.0` (pushed back by CI; always equals the published image tag) |
+| `staging` | `stag-<next version>-<short sha>`, e.g. `stag-0.1.0-1a2b3c4` | — |
 
-Tags are immutable, so each build pushes a fresh versioned tag rather than
-overwriting a moving `latest`. Deploy references an explicit tag.
+Tags are immutable, so each build pushes a fresh tag rather than overwriting a
+moving `latest`. Deploy references an explicit tag. To never collide with an
+existing tag, the build workflow
+([`.github/scripts/image_tag.sh`](.github/scripts/image_tag.sh)):
+
+- computes the next `main` version from **both** the semver git tags (`vX.Y.Z`;
+  other tags are ignored) and the `X.Y.Z` tags already in ECR;
+- makes `staging` and feature tags commit-unique (short SHA suffix);
+- serializes runs per branch (workflow `concurrency`);
+- skips the build when the commit's image is already in ECR (reruns are no-ops);
+- on ECR's explicit "tag already exists … immutable" rejection, moves `main`
+  to the next free version (any other push error fails the build).
+
+Run `bash .github/scripts/test_image_tag.sh` to test the tag logic locally.
 
 ### Required repository secrets
 

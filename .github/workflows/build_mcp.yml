@@ -2,16 +2,17 @@ name: Build MCP image
 
 # Builds the apeiron-mcp Docker image and pushes it to AWS ECR.
 #
-# Mirrors the apeiron-ml `Build backend` workflow:
-#   * `feature/*` branches -> image tag = ticket number (e.g. APLF-664)
-#   * `main`               -> image tag = next semantic version (e.g. 0.1.0)
-#   * `staging`            -> image tag = stag-<version>       (e.g. stag-0.1.0)
+# Image tags (see .github/scripts/image_tag.sh):
+#   * `main`      -> next free semantic version, e.g. 0.1.0; the same version is
+#                    pushed back to GitHub as the `v*` tag (e.g. v0.1.0)
+#   * `staging`   -> stag-<next version>-<short sha>, e.g. stag-0.1.0-1a2b3c4
+#   * `feature/*` -> <ticket>-<short sha>,             e.g. APLF-664-1a2b3c4
 #
-# On `main` the next semantic version is pushed back to GitHub as a `v*` tag
-# (e.g. v0.1.0).
-#
-# The ECR repository uses immutable tags, so only the versioned tag is pushed —
-# there is no mutable `latest`. Deploy pulls an explicit tag (see deploy_mcp.yml).
+# The ECR repository uses immutable tags, so a tag can never be overwritten
+# (there is no mutable `latest`). The next version is therefore computed from
+# both the semver git tags (`vX.Y.Z`) and the tags already in ECR, runs on the
+# same branch are serialized, and a rerun for a commit whose image is already
+# in ECR is a no-op. Deploy pulls an explicit tag (see deploy_mcp.yml).
 #
 # Required repository secrets (shared with apeiron-ml):
 #   AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_ECR_URL
@@ -28,13 +29,37 @@ on:
 permissions:
   contents: write
 
+# Serialize runs per branch so two runs never pick the same tag. A run that is
+# already publishing is never cancelled (GitHub keeps only the newest pending
+# run per group; it builds the latest commit anyway).
+concurrency:
+  group: build-mcp-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash  # -eo pipefail
+
 env:
   # ECR repository, relative to the registry in secrets.AWS_ECR_URL.
   ECR_REPOSITORY: phs/apeiron-mcp
   AWS_REGION: us-west-2
+  LOCAL_IMAGE: apeiron-mcp:build
 
 jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Lint and test image tag selection
+        run: |
+          shellcheck .github/scripts/*.sh
+          bash .github/scripts/test_image_tag.sh
+
   build:
+    needs: validate
     runs-on: ubuntu-latest
 
     steps:
@@ -48,86 +73,77 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: us-west-2
+          aws-region: ${{ env.AWS_REGION }}
 
-      - name: Fetch all tags
-        run: git fetch --tags
-
-      - name: Get Semantic Version
-        id: version
+      - name: Collect existing git and ECR tags
         run: |
-          BRANCH_NAME=$(echo "$GITHUB_REF" | sed 's|refs/heads/||')
+          git fetch --tags --force
+          git tag -l > "$RUNNER_TEMP/git_tags.txt"
+          git tag --points-at "$GITHUB_SHA" > "$RUNNER_TEMP/head_tags.txt"
 
-          if [[ "$BRANCH_NAME" == feature/* ]]; then
-            # Feature branch: extract ticket number
-            TICKET_NUMBER=$(echo "$BRANCH_NAME" | sed -E 's/^feature\/([A-Za-z0-9\-]+)-([0-9]+).*/\1-\2/')
-            NEW_TAG="${TICKET_NUMBER}"
-            echo "Feature branch detected. Using ticket number as tag: $NEW_TAG"
+          # Any ECR error (auth, missing repository, throttling...) fails here.
+          aws ecr list-images \
+            --region "$AWS_REGION" \
+            --repository-name "$ECR_REPOSITORY" \
+            --filter tagStatus=TAGGED \
+            --query 'imageIds[].imageTag' \
+            --output text | tr '\t' '\n' > "$RUNNER_TEMP/ecr_tags.txt"
+          echo "Found $(grep -c . "$RUNNER_TEMP/ecr_tags.txt" || true) tags in ECR."
 
-          elif [[ "$BRANCH_NAME" == "main" || "$BRANCH_NAME" == "staging" ]]; then
-            # Main or Staging branch: use semantic versioning. Git tags carry a
-            # leading `v` (`v0.1.0`) that the ECR tag does not (`0.1.0`).
-            LATEST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || true)
-            TAG="${LATEST_TAG#v}"
-            TAG="${TAG:-0.0.0}"
-            echo "Current Tag: $TAG"
-            IFS='.' read -r major minor patch <<< "$TAG"
-            new_patch=$((patch + 1))
-            VERSION="$major.$minor.$new_patch"
+      - name: Select image tag
+        id: resolve
+        run: |
+          .github/scripts/image_tag.sh resolve "$GITHUB_REF_NAME" "$GITHUB_SHA" \
+            "$RUNNER_TEMP/git_tags.txt" "$RUNNER_TEMP/head_tags.txt" "$RUNNER_TEMP/ecr_tags.txt" \
+            | tee -a "$GITHUB_OUTPUT"
 
-            if [[ "$BRANCH_NAME" == "staging" ]]; then
-              NEW_TAG="stag-$VERSION"
-            else
-              NEW_TAG="$VERSION"
+      - name: Authenticate with AWS ECR
+        if: steps.resolve.outputs.skip != 'true'
+        run: |
+          aws ecr get-login-password --region "$AWS_REGION" | docker login --username AWS --password-stdin "${{ secrets.AWS_ECR_URL }}"
+
+      - name: Build Docker Image
+        if: steps.resolve.outputs.skip != 'true'
+        run: |
+          docker build -t "$LOCAL_IMAGE" \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --target runtime .
+
+      - name: Push Docker Image to AWS ECR
+        id: publish
+        if: steps.resolve.outputs.skip != 'true'
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: |
+          .github/scripts/image_tag.sh publish "$GITHUB_REF_NAME" \
+            "${{ secrets.AWS_ECR_URL }}/$ECR_REPOSITORY" "$LOCAL_IMAGE" "$TAG" \
+            "$RUNNER_TEMP/git_tags.txt" "$RUNNER_TEMP/ecr_tags.txt" \
+            | tee -a "$GITHUB_OUTPUT"
+
+      - name: Push matching semantic tag to GitHub (main only)
+        if: github.ref == 'refs/heads/main' && steps.publish.outputs.pushed == 'true'
+        env:
+          # Exactly the version that was published to ECR.
+          GIT_TAG: v${{ steps.publish.outputs.tag }}
+        run: |
+          if existing=$(git rev-parse -q --verify "refs/tags/$GIT_TAG^{commit}"); then
+            if [[ "$existing" == "$GITHUB_SHA" ]]; then
+              echo "$GIT_TAG already points at $GITHUB_SHA."
+              exit 0
             fi
-
-            echo "$BRANCH_NAME branch detected. New tag: $NEW_TAG"
-
-          else
-            echo "::error::Unsupported branch '$BRANCH_NAME'. Build failed."
+            echo "::error::$GIT_TAG already exists on $existing, not $GITHUB_SHA."
             exit 1
           fi
 
-          echo "tag=$NEW_TAG" >> $GITHUB_ENV
-
-      - name: Authenticate with AWS ECR
-        run: |
-          aws ecr get-login-password --region us-west-2 | docker login --username AWS --password-stdin ${{ secrets.AWS_ECR_URL }}
-
-      - name: Build Docker Image
-        run: |
-          docker build -t ${{ secrets.AWS_ECR_URL }}/phs/apeiron-mcp:${{ env.tag }} --target runtime .
-
-      - name: Push Docker Image to AWS ECR
-        run: |
-          docker push ${{ secrets.AWS_ECR_URL }}/phs/apeiron-mcp:${{ env.tag }}
-
-      - name: Push next semantic tag to GitHub (main only)
-        if: github.ref == 'refs/heads/main' && success()
-        run: |
           git config user.name "github-actions"
           git config user.email "actions@github.com"
+          # No -f: never move an existing tag.
+          git tag "$GIT_TAG" "$GITHUB_SHA"
+          git push origin "refs/tags/$GIT_TAG"
 
-          echo "Fetching all tags from GitHub..."
-          git fetch --tags
-
-          # Find the latest tag starting with v
-          LATEST_TAG=$(git tag --sort=-creatordate | grep '^v' | head -n1)
-          echo "Latest tag found: $LATEST_TAG"
-
-          if [[ -z "$LATEST_TAG" ]]; then
-            NEXT_TAG="v0.0.1"
-          else
-            VERSION=${LATEST_TAG#v}              # Remove 'v'
-            IFS='.' read -r MAJOR MINOR PATCH <<< "$VERSION"
-            PATCH=$((PATCH + 1))                # Increment patch
-            NEXT_TAG="v$MAJOR.$MINOR.$PATCH"
-          fi
-
-          echo "Next tag to push: $NEXT_TAG"
-
-          # Create the new tag locally pointing to current commit
-          git tag -f "$NEXT_TAG"
-
-          # Push the new tag to GitHub
-          git push origin "$NEXT_TAG"
+      - name: Summary
+        env:
+          TAG: ${{ steps.publish.outputs.tag || steps.resolve.outputs.tag }}
+          PUSHED: ${{ steps.publish.outputs.pushed || 'false' }}
+        run: |
+          echo "Image: $ECR_REPOSITORY:$TAG (pushed in this run: $PUSHED)" | tee -a "$GITHUB_STEP_SUMMARY"
