@@ -1,0 +1,15 @@
+{
+	"servers": {
+		"apeiron": {
+			"type": "stdio",
+			"command": "/home/lenovo/Apeiron/apeiron-mcp/.venv/bin/apeiron-mcp",
+			"args": []
+		},
+		"my-mcp-server-6e3d0221": {
+			"type": "stdio",
+			"command": "/home/lenovo/Apeiron/apeiron-mcp/.venv/bin/apeiron-mcp",
+			"args": []
+		}
+	},
+	"inputs": []
+}

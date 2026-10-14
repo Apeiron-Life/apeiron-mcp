@@ -166,9 +166,6 @@ CARDIO_METRIC_ALIASES: dict[str, tuple[str, ...]] = {
 #: ``get_lifestyle_summary`` period -> trailing window length in days.
 LIFESTYLE_PERIOD_DAYS = {"week": 7, "month": 30, "quarter": 91}
 
-#: ``get_trends`` granularity -> ``/trend_statistics/`` ``range_type`` value.
-TREND_RANGE_TYPES = {"day": "custom", "week": "week", "month": "month"}
-
 
 def _person_id(client_id: str) -> Any:
     """Apeiron addresses users by numeric ``person_id``."""
@@ -796,60 +793,42 @@ def get_trends(
     end_date: str,
     granularity: Granularity = "day",
 ) -> dict[str, Any]:
-    """Generic trend statistics for any (domain, metric).
+    """Most significant trend changes for a client (top 5).
 
-    Backed by ``GET /trend_statistics/`` with ``person_id``, ``range_type``
-    (derived from ``granularity``) and the ``from``/``to`` window. The metric is
-    requested as ``metric_keys="<domain>.<metric>"``; if the API rejects that key
-    the call is retried without it and every trend metric in the window is
-    returned, with a note explaining why.
+    Backed by ``GET /trend_statistics/summary``, which returns the person's most
+    significant trend changes (the top 5). Unlike ``GET /trend_statistics/`` it
+    accepts only ``person_id`` — no ``metric_keys``, ``range_type`` or
+    ``from``/``to`` window — so ``domain``, ``metric``, the date bounds and
+    ``granularity`` are not sent to the API. They are kept in the tool signature
+    for backward compatibility and echoed in the response envelope for context.
 
     Args:
-        domain: e.g. ``"sleep"``, ``"cardio"``, ``"nutrition"``.
-        metric: metric name within that domain (e.g. ``"hrv"``, ``"sleep_score"``).
-        granularity: bucket size for the returned series.
+        domain: advisory — e.g. ``"sleep"``, ``"cardio"``, ``"nutrition"``.
+        metric: advisory — metric name within that domain (e.g. ``"hrv"``).
+        start_date: advisory — ISO date echoed in the envelope ``period``.
+        end_date: advisory — ISO date echoed in the envelope ``period``.
+        granularity: advisory — retained for backward compatibility.
     """
     if not apeiron.is_configured():
-        series = [
-            {"bucket": start_date, "value": 60},
-            {"bucket": end_date, "value": 63},
-        ]
         data = {
             "domain": domain,
             "metric": metric,
-            "granularity": granularity,
-            "series": series,
-            "delta": 3,
-            "direction": "up",
+            "significant_changes": [
+                {"metric": f"{domain}.{metric}", "direction": "up", "change_pct": 5.0},
+                {"metric": "sleep.sleep_score", "direction": "down", "change_pct": -2.3},
+                {"metric": "cardio.resting_hr", "direction": "up", "change_pct": 1.8},
+            ],
         }
         return _stub_envelope(client_id, f"trends:{domain}.{metric}", data, start_date, end_date)
 
-    start, end = _window(start_date, end_date)
-    metric_key = f"{domain}.{metric}"
-    params: dict[str, Any] = {
-        "person_id": _person_id(client_id),
-        "range_type": TREND_RANGE_TYPES[granularity],
-        "from": start,
-        "to": end,
-        "metric_keys": metric_key,
-    }
-
-    notes: list[str] = []
-    try:
-        data = apeiron.get("/trend_statistics/", params)
-    except apeiron.ApeironAPIError as exc:
-        if exc.status_code != 400:
-            raise ToolError(f"Apeiron API error: {exc}") from exc
-        notes.append(
-            f"Retried /trend_statistics/ without metric_keys={metric_key!r}; "
-            f"every trend metric for the window is returned ({exc})."
-        )
-        params.pop("metric_keys")
-        data = _call("/trend_statistics/", params)
-    except apeiron.ApeironAuthError as exc:
-        raise ToolError(f"Apeiron API error: {exc}") from exc
-
-    return _envelope(client_id, f"trends:{domain}.{metric}", data, start, end, notes=notes)
+    person_id = _person_id(client_id)
+    notes = [
+        "GET /trend_statistics/summary returns the client's most significant "
+        "trend changes (top 5) and accepts only person_id; domain, metric, the "
+        "date window and granularity are not applied server-side."
+    ]
+    data = _call("/trend_statistics/summary", {"person_id": person_id})
+    return _envelope(client_id, f"trends:{domain}.{metric}", data, start_date, end_date, notes=notes)
 
 
 # --------------------------------------------------------------------------- #

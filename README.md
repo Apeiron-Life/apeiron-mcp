@@ -18,7 +18,7 @@ unambiguous.
 | 6 | `get_cognitive_data` | Cognitive assessment datasets and trends. | `GET /datasets/cognitive_health` |
 | 7 | `get_healthspan_domain_summary` | Cross-domain rolled-up healthy-signal scores. | `GET /health_status/`, `GET /healthy_signals/` |
 | 8 | `get_lifestyle_summary` | Lifestyle/adherence rollup for a period. | `GET /datasets/lifestyle_assessment`, `GET /summary_card/` |
-| 9 | `get_trends` | Generic trend statistics for any (domain, metric). | `GET /trend_statistics/` |
+| 9 | `get_trends` | Most significant trend changes for a client (top 5). | `GET /trend_statistics/summary` |
 | 10 | `get_notes` | Clinician/client/system free-text notes. | `GET /note/` |
 | 11 | `get_chat_history` | Coaching chat messages (most recent first). | `GET /message/` |
 
@@ -296,7 +296,7 @@ read (`GET`) endpoints; the validated dataset types are `bio_marker`,
 | `get_cognitive_data` | `GET /datasets/cognitive_health?person_id` | filtered locally on `test_date` |
 | `get_healthspan_domain_summary` | `GET /health_status/?person_id` and `GET /healthy_signals/?person_id&range_type=week&from&to` | native for healthy signals |
 | `get_lifestyle_summary` | `GET /datasets/lifestyle_assessment?person_id` and `GET /summary_card/?person_id&from&to` | native for the summary card |
-| `get_trends` | `GET /trend_statistics/?person_id&metric_keys&range_type&from&to` | native; `granularity` → `range_type` (`day`→`custom`, `week`→`week`, `month`→`month`) |
+| `get_trends` | `GET /trend_statistics/summary?person_id` | native; the endpoint returns the top significant changes and accepts only `person_id`, so `domain`/`metric`/date bounds/`granularity` are kept in the signature for compatibility but not sent to the API |
 | `get_notes` | `GET /note/?client_id&start&end` | native; `author` filtered locally |
 | `get_chat_history` | `GET /message/?client_id` | filtered and trimmed locally (`limit`) |
 
@@ -316,8 +316,8 @@ silently emptied:
 * Date bounds on `/datasets/{type}` (which takes no date parameter) and on
   `/message/`.
 * `get_chat_history.limit` — the most recent N messages are returned.
-* `get_trends` retries without `metric_keys` when the API rejects
-  `"<domain>.<metric>"`, returning every trend metric for the window.
+* `get_trends` no longer filters by metric: `GET /trend_statistics/summary` takes
+  only `person_id` and returns the person's most significant trend changes.
 * `get_chat_history.conversation_id` is ignored: Apeiron keeps a single message
   thread per client.
 
